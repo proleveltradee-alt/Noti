@@ -1,6 +1,54 @@
+require('dotenv').config();
+const admin = require('firebase-admin');
+const axios = require('axios');
+const express = require('express');
+
+// ১. রেলওয়ে হেলথ চেক সার্ভার
+const app = express();
+const PORT = process.env.PORT || 8080;
+app.get('/', (req, res) => res.send('Bot Status: Active'));
+app.listen(PORT, () => console.log(`🚀 Server listening on port ${PORT}`));
+
+// ২. এনভায়রনমেন্ট ভেরিয়েবল লোড
+if (!process.env.FIREBASE_SERVICE) throw new Error("Missing FIREBASE_SERVICE env variable");
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE);
+
+if (!process.env.BOT_TOKEN) throw new Error("Missing BOT_TOKEN env variable");
+const BOT_TOKEN = process.env.BOT_TOKEN;
+
+// ৩. Firebase initialize
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+  });
+}
+const db = admin.firestore();
+
+// টাইমস্ট্যাম্প ফরম্যাট
+function formatTime(timestamp) {
+  if (timestamp && timestamp.seconds) {
+    return new Date(timestamp.seconds * 1000).toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' });
+  }
+  return new Date().toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' });
+}
+
+// টেলিগ্রাম মেসেজ ফাংশন
+async function sendTelegramMessage(chatId, message) {
+  try {
+    const res = await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+      chat_id: chatId,
+      text: message
+    });
+    return res.data.ok;
+  } catch (err) {
+    console.error('❌ Telegram error:', err.response?.data || err.message);
+    return false;
+  }
+}
+
 // ৪. মেইন ইভেন্ট প্রসেসর
 async function processEvent(data, docId, collectionName) {
-  // ১. এখানে 'edit' ভেরিয়েবলটি destructure করা হলো
+  // name, region, reason, edit সব ভেরিয়েবল destructure করা হলো
   const { status, method, amount, trxId, requestId, notified, bankid, note, region, reason, name, edit } = data;
 
   if (!status || !method) return;
@@ -30,8 +78,7 @@ async function processEvent(data, docId, collectionName) {
       const formattedBDT = bdtAmount.toFixed(2);
 
       if (status === 'approved') {
-        // ✅ DEPOSIT APPROVED (Updated with Comment logic)
-        // ২. লজিক: যদি edit থাকে তাহলে নতুন লাইনে Comment দেখাবে, না থাকলে দেখাবে না।
+        // ✅ DEPOSIT APPROVED (Updated Logic with Comment)
         msg = `APPROVED 
 BankTransfer Agents
 Deposit Request № ${requestId || 'N/A'}
@@ -117,3 +164,22 @@ BankTransferComment: ${reason || 'N/A'}`;
     console.error('❌ Error processing event:', err.message);
   }
 }
+
+// ৫. লিসেনারস
+db.collection('depositRequests').onSnapshot(snap => {
+  snap.docChanges().forEach(change => {
+    if (change.type === 'added' || change.type === 'modified') {
+      processEvent(change.doc.data(), change.doc.id, 'depositRequests');
+    }
+  });
+}, err => console.error("Deposit Listener Err:", err));
+
+db.collection('withdrawRequests').onSnapshot(snap => {
+  snap.docChanges().forEach(change => {
+    if (change.type === 'added' || change.type === 'modified') {
+      processEvent(change.doc.data(), change.doc.id, 'withdrawRequests');
+    }
+  });
+}, err => console.error("Withdraw Listener Err:", err));
+
+console.log('🚀 Bot is running and Railway health check is active...');
